@@ -46,13 +46,6 @@ def human_mb(kb):
 STYLE = """
 QDialog { background: #f7f8fa; }
 
-QLabel#status {
-    font-size: 9.5pt; color: #555555; padding: 4px 0;
-}
-QLabel#status[state="busy"] { color: #c0392b; font-weight: 600; }
-QLabel#status[state="ok"]   { color: #27ae60; font-weight: 600; }
-QLabel#status[state="err"]  { color: #c0392b; font-weight: 600; }
-
 QFrame#card {
     background: #ffffff;
     border: 1px solid #e3e6ea;
@@ -74,6 +67,7 @@ QGroupBox::title {
     left: 12px;
     padding: 0 4px;
     background: #f7f8fa;
+    top: 4px;
 }
 
 QCheckBox {
@@ -115,23 +109,22 @@ QPushButton#primary:hover { background: #2459b8; }
 QPushButton#primary:pressed { background: #1e4a99; }
 QPushButton#primary:disabled { background: #a9bce0; color: #f0f0f0; }
 
-QPushButton#danger {
-    background: #ffffff; color: #c0392b; border: 1px solid #e5b9b3;
-}
-QPushButton#danger:hover { background: #fdf0ee; }
-
 QProgressBar {
     background: #eef1f5;
     border: 1px solid #e3e6ea;
     border-radius: 4px;
-    height: 10px;
+    height: 18px;
     text-align: center;
-    color: transparent;
+    color: #555555;
+    font-size: 9pt;
 }
 QProgressBar::chunk {
     background: #2d6cdf;
     border-radius: 4px;
 }
+QProgressBar[state="busy"] { color: #c0392b; }
+QProgressBar[state="ok"]   { color: #ffffff; }
+QProgressBar[state="err"]  { color: #c0392b; }
 
 QTextEdit {
     background: #1e1e1e;
@@ -141,6 +134,11 @@ QTextEdit {
     padding: 8px;
     font-family: Consolas, monospace;
     font-size: 9.5pt;
+}
+
+QLabel#status {
+    font-size: 9.5pt;
+    color: #555555;
 }
 """
 
@@ -198,7 +196,8 @@ class CleanerWorker(QThread):
             self.progress.emit(100, "Готово")
             self.log.emit("\n" + "=" * 40)
             self.log.emit(f"💾 Свободно ПОСЛЕ: {human_mb(after)}")
-            if freed >= 0:
+            NOISE_KB = 1024  # 1 MB — всё, что меньше, считаем шумом
+            if freed > -NOISE_KB:
                 self.log.emit(f"✅ Освобождено: {human_mb(freed)}")
             else:
                 self.log.emit(f"⚠️  Свободного места стало меньше на {human_mb(-freed)}")
@@ -234,7 +233,7 @@ class CleanerWorker(QThread):
         self.log.emit(o.strip() or "repair: ок")
 
     def _apt(self):
-        for cmd in ("sudo apt autoremove -y", "sudo apt clean"):
+        for cmd in ("sudo apt-get autoremove -y", "sudo apt-get clean"):
             self.log.emit(f"→ {cmd}")
             c, o = run(cmd)
             tail = "\n".join(o.strip().splitlines()[-8:])
@@ -270,7 +269,7 @@ class CleanerApp(QDialog):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Очистка системы Linux")
-        self.resize(860, 700)
+        self.resize(560, 700)
         self.setStyleSheet(STYLE)
         self.worker = None
         self._build_ui()
@@ -280,38 +279,7 @@ class CleanerApp(QDialog):
         root.setContentsMargins(18, 16, 18, 12)
         root.setSpacing(10)
 
-        # --- Прогресс ---
-        self.progress = QProgressBar()
-        self.progress.setRange(0, 100)
-        self.progress.setValue(0)
-        root.addWidget(self.progress)
-
-        # --- Статус ---
-        self.status_lbl = QLabel("Готов к запуску")
-        self.status_lbl.setObjectName("status")
-        root.addWidget(self.status_lbl)
-
-        # --- Кнопки ---
-        btns = QHBoxLayout()
-        btns.setSpacing(10)
-        self.start_btn = QPushButton("▶  Запустить очистку")
-        self.start_btn.setObjectName("primary")
-        self.start_btn.clicked.connect(self.start)
-
-        self.clear_btn = QPushButton("Очистить лог")
-        self.clear_btn.clicked.connect(self.clear_log)
-
-        self.close_btn = QPushButton("Закрыть")
-        self.close_btn.setObjectName("danger")
-        self.close_btn.clicked.connect(self.reject)
-
-        btns.addWidget(self.start_btn)
-        btns.addWidget(self.clear_btn)
-        btns.addStretch()
-        btns.addWidget(self.close_btn)
-        root.addLayout(btns)
-
-        # --- Выбор компонентов ---
+        # --- Выбор компонентов (самый верх) ---
         sel_box = QGroupBox("Что очищать")
         sel_lay = QGridLayout(sel_box)
         sel_lay.setContentsMargins(12, 8, 12, 12)
@@ -334,6 +302,21 @@ class CleanerApp(QDialog):
 
         root.addWidget(sel_box)
 
+        # --- Кнопки ---
+        btns = QHBoxLayout()
+        btns.setSpacing(10)
+        self.start_btn = QPushButton("▶  Запустить очистку")
+        self.start_btn.setObjectName("primary")
+        self.start_btn.clicked.connect(self.start)
+
+        self.clear_btn = QPushButton("Очистить лог")
+        self.clear_btn.clicked.connect(self.clear_log)
+
+        btns.addWidget(self.start_btn)
+        btns.addWidget(self.clear_btn)
+        btns.addStretch()
+        root.addLayout(btns)
+
         # --- Карточка с логом ---
         card = QFrame()
         card.setObjectName("card")
@@ -346,7 +329,14 @@ class CleanerApp(QDialog):
 
         root.addWidget(card, 1)
 
-        # --- Футер ---
+        # --- Прогресс (под логом), текст внутри ---
+        self.progress = QProgressBar()
+        self.progress.setRange(0, 100)
+        self.progress.setValue(0)
+        self.progress.setFormat("Готов к запуску")
+        root.addWidget(self.progress)
+
+        # --- Футер с итогами ---
         self.footer = QLabel("")
         self.footer.setObjectName("status")
         root.addWidget(self.footer)
@@ -361,13 +351,10 @@ class CleanerApp(QDialog):
         self.log.clear()
 
     def set_status(self, text, state=None):
-        self.status_lbl.setText(text)
-        if state:
-            self.status_lbl.setProperty("state", state)
-        else:
-            self.status_lbl.setProperty("state", "")
-        self.status_lbl.style().unpolish(self.status_lbl)
-        self.status_lbl.style().polish(self.status_lbl)
+        self.progress.setFormat(text)
+        self.progress.setProperty("state", state or "")
+        self.progress.style().unpolish(self.progress)
+        self.progress.style().polish(self.progress)
 
     # --- Вспомогательное: блокировка выбора на время работы ---
     def _set_selection_enabled(self, enabled):
@@ -416,7 +403,8 @@ class CleanerApp(QDialog):
 
     def _on_finished_ok(self, freed, after):
         self.set_status("Готово", "ok")
-        if freed >= 0:
+        NOISE_KB = 1024  # 1 MB — всё, что меньше, считаем шумом
+        if freed > -NOISE_KB:
             self.footer.setText(f"Освобождено: {human_mb(freed)}   •   Свободно: {human_mb(after)}")
             QMessageBox.information(
                 self, "Готово",
@@ -428,6 +416,7 @@ class CleanerApp(QDialog):
                 self, "Готово",
                 f"Очистка завершена.\nСвободного места стало меньше на {human_mb(-freed)}."
             )
+
         self._set_selection_enabled(True)
 
     def _on_finished_err(self, err):
