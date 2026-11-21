@@ -14,7 +14,7 @@ from datetime import datetime
 from PyQt5.QtWidgets import (
     QApplication, QDialog, QVBoxLayout, QHBoxLayout, QLabel,
     QPushButton, QMessageBox, QProgressBar, QTextEdit, QFrame,
-    QWidget, QSizePolicy
+    QWidget, QSizePolicy, QCheckBox, QGroupBox, QGridLayout
 )
 from PyQt5.QtCore import Qt, QThread, pyqtSignal
 from PyQt5.QtGui import QFont, QTextCursor
@@ -46,12 +46,6 @@ def human_mb(kb):
 STYLE = """
 QDialog { background: #f7f8fa; }
 
-QLabel#headerTitle {
-    font-size: 16pt; font-weight: 600; color: #1a1a1a;
-}
-QLabel#headerSub {
-    font-size: 9.5pt; color: #666666;
-}
 QLabel#status {
     font-size: 9.5pt; color: #555555; padding: 4px 0;
 }
@@ -64,6 +58,42 @@ QFrame#card {
     border: 1px solid #e3e6ea;
     border-radius: 10px;
 }
+
+QGroupBox {
+    background: #ffffff;
+    border: 1px solid #e3e6ea;
+    border-radius: 10px;
+    margin-top: 14px;
+    padding-top: 6px;
+    font-size: 9.5pt;
+    color: #555555;
+}
+QGroupBox::title {
+    subcontrol-origin: margin;
+    subcontrol-position: top left;
+    left: 12px;
+    padding: 0 4px;
+    background: #f7f8fa;
+}
+
+QCheckBox {
+    font-size: 10pt;
+    color: #1a1a1a;
+    spacing: 8px;
+}
+QCheckBox::indicator {
+    width: 16px; height: 16px;
+    border: 1px solid #b9bec6;
+    border-radius: 4px;
+    background: #ffffff;
+}
+QCheckBox::indicator:hover { border-color: #2d6cdf; }
+QCheckBox::indicator:checked {
+    background: #2d6cdf;
+    border-color: #2d6cdf;
+    image: none;
+}
+QCheckBox:disabled { color: #a0a0a0; }
 
 QPushButton {
     background: #ffffff;
@@ -122,40 +152,47 @@ class CleanerWorker(QThread):
     finished_ok = pyqtSignal(int, int)  # freed_kb, after_kb
     finished_err = pyqtSignal(str)
 
-    def __init__(self):
+    def __init__(self, tasks):
         super().__init__()
+        # tasks: dict[str, bool] с ключами snap/flatpak/apt/journal/caches
+        self.tasks = tasks
 
     def run(self):
         try:
             before = free_kb()
             self.log.emit(f"💾 Свободно ДО: {human_mb(before)}")
-            self.progress.emit(5, "Удаление старых snap-пакетов…")
 
-            # --- Snap ---
-            self.log.emit("\n=== Snap: старые ревизии ===")
-            self._snap()
-            self.progress.emit(25, "Очистка flatpak…")
+            # Собираем только выбранные шаги
+            steps = []
+            if self.tasks.get("snap"):
+                steps.append(("Snap: старые ревизии", "Удаление старых snap-пакетов…", self._snap))
+            if self.tasks.get("flatpak"):
+                steps.append(("Flatpak", "Очистка flatpak…", self._flatpak))
+            if self.tasks.get("apt"):
+                steps.append(("Apt", "apt autoremove / clean…", self._apt))
+            if self.tasks.get("journal"):
+                steps.append(("Journal", "Очистка журналов systemd…", self._journal))
+            if self.tasks.get("caches"):
+                steps.append(("Кеши и /tmp", "Очистка кешей и /var/tmp…", self._caches))
 
-            # --- Flatpak ---
-            self.log.emit("\n=== Flatpak ===")
-            self._flatpak()
-            self.progress.emit(45, "apt autoremove / clean…")
+            if not steps:
+                self.log.emit("Ничего не выбрано — выходим.")
+                after = free_kb()
+                self.progress.emit(100, "Готово")
+                self.finished_ok.emit(0, after)
+                return
 
-            # --- Apt ---
-            self.log.emit("\n=== Apt ===")
-            self._apt()
-            self.progress.emit(60, "Очистка журналов systemd…")
+            n = len(steps)
+            # Основная работа занимает диапазон 5..95 %, по шагам поровну.
+            for i, (title, msg, fn) in enumerate(steps):
+                start = 5 + int(i * 90 / n)
+                self.progress.emit(start, msg)
+                self.log.emit(f"\n=== {title} ===")
+                fn()
+                end = 5 + int((i + 1) * 90 / n)
+                self.progress.emit(end, msg)
 
-            # --- Journal ---
-            self.log.emit("\n=== Journal ===")
-            self._journal()
-            self.progress.emit(75, "Очистка кешей и /var/tmp…")
-
-            # --- Кеши / tmp ---
-            self.log.emit("\n=== Кеши и /tmp ===")
-            self._caches()
-            self.progress.emit(95, "Подведение итогов…")
-
+            self.progress.emit(97, "Подведение итогов…")
             after = free_kb()
             freed = after - before
             self.progress.emit(100, "Готово")
@@ -233,7 +270,7 @@ class CleanerApp(QDialog):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Очистка системы Linux")
-        self.resize(820, 660)
+        self.resize(860, 700)
         self.setStyleSheet(STYLE)
         self.worker = None
         self._build_ui()
@@ -242,17 +279,6 @@ class CleanerApp(QDialog):
         root = QVBoxLayout(self)
         root.setContentsMargins(18, 16, 18, 12)
         root.setSpacing(10)
-
-        # --- Шапка ---
-        header = QVBoxLayout()
-        header.setSpacing(2)
-        title = QLabel("Очистка системы")
-        title.setObjectName("headerTitle")
-        sub = QLabel("Snap  ·  Flatpak  ·  Apt  ·  Journal  ·  Кеши  ·  /tmp")
-        sub.setObjectName("headerSub")
-        header.addWidget(title)
-        header.addWidget(sub)
-        root.addLayout(header)
 
         # --- Прогресс ---
         self.progress = QProgressBar()
@@ -285,6 +311,29 @@ class CleanerApp(QDialog):
         btns.addWidget(self.close_btn)
         root.addLayout(btns)
 
+        # --- Выбор компонентов ---
+        sel_box = QGroupBox("Что очищать")
+        sel_lay = QGridLayout(sel_box)
+        sel_lay.setContentsMargins(12, 8, 12, 12)
+        sel_lay.setHorizontalSpacing(18)
+        sel_lay.setVerticalSpacing(6)
+
+        self.cb = {}
+        items = [
+            ("snap",    "Snap: старые ревизии"),
+            ("flatpak", "Flatpak: неиспользуемое + данные"),
+            ("apt",     "Apt: autoremove + clean"),
+            ("journal", "Journal: журналы > 7 дней"),
+            ("caches",  "Кеши ~/.cache и /var/tmp"),
+        ]
+        for i, (key, text) in enumerate(items):
+            cb = QCheckBox(text)
+            cb.setChecked(True)
+            self.cb[key] = cb
+            sel_lay.addWidget(cb, i // 2, i % 2)
+
+        root.addWidget(sel_box)
+
         # --- Карточка с логом ---
         card = QFrame()
         card.setObjectName("card")
@@ -299,7 +348,7 @@ class CleanerApp(QDialog):
 
         # --- Футер ---
         self.footer = QLabel("")
-        self.footer.setObjectName("headerSub")
+        self.footer.setObjectName("status")
         root.addWidget(self.footer)
 
     # --- Логирование ---
@@ -320,26 +369,41 @@ class CleanerApp(QDialog):
         self.status_lbl.style().unpolish(self.status_lbl)
         self.status_lbl.style().polish(self.status_lbl)
 
+    # --- Вспомогательное: блокировка выбора на время работы ---
+    def _set_selection_enabled(self, enabled):
+        for cb in self.cb.values():
+            cb.setEnabled(enabled)
+        self.start_btn.setEnabled(enabled)
+
     # --- Запуск ---
     def start(self):
+        tasks = {k: cb.isChecked() for k, cb in self.cb.items()}
+        if not any(tasks.values()):
+            QMessageBox.information(self, "Ничего не выбрано",
+                                    "Отметьте хотя бы один пункт для очистки.")
+            return
+
+        labels = {
+            "snap":    "старые ревизии snap",
+            "flatpak": "неиспользуемые flatpak и их данные",
+            "apt":     "кеши apt (autoremove + clean)",
+            "journal": "журналы systemd старше 7 дней",
+            "caches":  "~/.cache/* и /var/tmp/*",
+        }
+        chosen = "\n".join(f" • {labels[k]}" for k, v in tasks.items() if v)
+
         if QMessageBox.question(
             self, "Подтверждение",
-            "Будут удалены:\n"
-            " • старые ревизии snap\n"
-            " • неиспользуемые flatpak и их данные\n"
-            " • кеши apt и ~/.cache/*\n"
-            " • старые журналы (>7 дней)\n"
-            " • /var/tmp/*\n\n"
-            "Продолжить?",
+            f"Будут удалены:\n{chosen}\n\nПродолжить?",
             QMessageBox.Yes | QMessageBox.No, QMessageBox.No
         ) != QMessageBox.Yes:
             return
 
-        self.start_btn.setEnabled(False)
+        self._set_selection_enabled(False)
         self.progress.setValue(0)
         self.set_status("Запуск...", "busy")
 
-        self.worker = CleanerWorker()
+        self.worker = CleanerWorker(tasks)
         self.worker.progress.connect(self._on_progress)
         self.worker.log.connect(self.log_line)
         self.worker.finished_ok.connect(self._on_finished_ok)
@@ -364,13 +428,13 @@ class CleanerApp(QDialog):
                 self, "Готово",
                 f"Очистка завершена.\nСвободного места стало меньше на {human_mb(-freed)}."
             )
-        self.start_btn.setEnabled(True)
+        self._set_selection_enabled(True)
 
     def _on_finished_err(self, err):
         self.log_line(f"\n❌ Ошибка: {err}")
         self.set_status("Ошибка", "err")
         QMessageBox.critical(self, "Ошибка", err)
-        self.start_btn.setEnabled(True)
+        self._set_selection_enabled(True)
 
 
 def main():
